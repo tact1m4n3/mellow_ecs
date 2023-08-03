@@ -10,12 +10,12 @@ use crate::{
     tables::{Table, Tables},
 };
 
-pub trait Fetch {
+pub trait Query {
     fn for_each_type(f: impl FnMut(&ItemType, bool, bool));
     unsafe fn from_components(f: impl FnMut(&ItemType) -> Option<*mut u8>) -> Self;
 }
 
-impl<T: 'static + Send + Sync> Fetch for &T {
+impl<T: 'static + Send + Sync> Query for &T {
     fn for_each_type(mut f: impl FnMut(&ItemType, bool, bool)) {
         f(&ItemType::of::<T>(), false, false);
     }
@@ -25,7 +25,7 @@ impl<T: 'static + Send + Sync> Fetch for &T {
     }
 }
 
-impl<T: 'static + Send + Sync> Fetch for &mut T {
+impl<T: 'static + Send + Sync> Query for &mut T {
     fn for_each_type(mut f: impl FnMut(&ItemType, bool, bool)) {
         f(&ItemType::of::<T>(), true, false);
     }
@@ -35,7 +35,7 @@ impl<T: 'static + Send + Sync> Fetch for &mut T {
     }
 }
 
-impl<T: 'static + Send + Sync> Fetch for Option<&T> {
+impl<T: 'static + Send + Sync> Query for Option<&T> {
     fn for_each_type(mut f: impl FnMut(&ItemType, bool, bool)) {
         f(&ItemType::of::<T>(), false, true);
     }
@@ -45,7 +45,7 @@ impl<T: 'static + Send + Sync> Fetch for Option<&T> {
     }
 }
 
-impl<T: 'static + Send + Sync> Fetch for Option<&mut T> {
+impl<T: 'static + Send + Sync> Query for Option<&mut T> {
     fn for_each_type(mut f: impl FnMut(&ItemType, bool, bool)) {
         f(&ItemType::of::<T>(), true, true);
     }
@@ -57,7 +57,7 @@ impl<T: 'static + Send + Sync> Fetch for Option<&mut T> {
 
 macro_rules! tuple_impl {
     ($($name:ident),*) => {
-        impl<$($name: Fetch),*> Fetch for ($($name,)*) {
+        impl<$($name: Query),*> Query for ($($name,)*) {
             fn for_each_type(mut f: impl FnMut(&ItemType, bool, bool)) {
                 $($name::for_each_type(&mut f);)*
             }
@@ -96,15 +96,15 @@ tuple_impl!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W,
 tuple_impl!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y);
 tuple_impl!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z);
 
-pub struct Query<'a, F: Fetch> {
+pub struct FullQuery<'a, Q: Query> {
     stores: &'a Stores,
-    table_iter: Peekable<TableFilter<'a, F, Iter<'a, Table>>>,
+    table_iter: Peekable<TableFilter<'a, Q, Iter<'a, Table>>>,
     column_idx: usize,
-    _lock: QueryLock<'a, F>,
-    _marker: PhantomData<F>,
+    _lock: QueryLock<'a, Q>,
+    _marker: PhantomData<Q>,
 }
 
-impl<'a, F: Fetch> Query<'a, F> {
+impl<'a, Q: Query> FullQuery<'a, Q> {
     pub fn new(stores: &'a Stores, tables: &'a Tables) -> Self {
         Self {
             stores,
@@ -116,8 +116,8 @@ impl<'a, F: Fetch> Query<'a, F> {
     }
 }
 
-impl<'a, F: Fetch> Iterator for Query<'a, F> {
-    type Item = (EntityId, F);
+impl<'a, Q: Query> Iterator for FullQuery<'a, Q> {
+    type Item = (EntityId, Q);
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(table) = self.table_iter.peek() {
@@ -130,7 +130,7 @@ impl<'a, F: Fetch> Iterator for Query<'a, F> {
         if let Some(table) = self.table_iter.peek() {
             let entity_id = table.get(self.column_idx).unwrap();
             let components = unsafe {
-                F::from_components(|typ| {
+                Q::from_components(|typ| {
                     if let Some(store_id) = table.column(typ) {
                         let store = self.stores.get(store_id);
                         store.get(self.column_idx)
@@ -149,15 +149,15 @@ impl<'a, F: Fetch> Iterator for Query<'a, F> {
     }
 }
 
-pub struct EntityQuery<'a, F: Fetch> {
+pub struct EntityQuery<'a, Q: Query> {
     stores: &'a Stores,
     table: Option<&'a Table>,
     column_idx: Option<usize>,
-    _lock: QueryLock<'a, F>,
-    _marker: PhantomData<F>,
+    _lock: QueryLock<'a, Q>,
+    _marker: PhantomData<Q>,
 }
 
-impl<'a, F: Fetch> EntityQuery<'a, F> {
+impl<'a, Q: Query> EntityQuery<'a, Q> {
     pub fn new(
         stores: &'a Stores,
         tables: &'a Tables,
@@ -167,7 +167,7 @@ impl<'a, F: Fetch> EntityQuery<'a, F> {
         let table_id = entities.table_id(entity_id);
         let table = table_id.and_then(|table_id| {
             let table = tables.get(table_id);
-            TableFilter::<F, Once<&Table>>::new(iter::once(table)).next()
+            TableFilter::<Q, Once<&Table>>::new(iter::once(table)).next()
         });
         let column_idx = table.and_then(|table| table.entity_index(entity_id));
 
@@ -181,15 +181,15 @@ impl<'a, F: Fetch> EntityQuery<'a, F> {
     }
 }
 
-impl<'a, F: Fetch> Iterator for EntityQuery<'a, F> {
-    type Item = F;
+impl<'a, Q: Query> Iterator for EntityQuery<'a, Q> {
+    type Item = Q;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.table
             .take()
             .zip(self.column_idx.take())
             .map(|(table, column_idx)| unsafe {
-                F::from_components(|typ| {
+                Q::from_components(|typ| {
                     if let Some(store_id) = table.column(typ) {
                         let store = self.stores.get(store_id);
                         store.get(column_idx)
@@ -201,12 +201,12 @@ impl<'a, F: Fetch> Iterator for EntityQuery<'a, F> {
     }
 }
 
-pub struct TableFilter<'a, F: Fetch, I: Iterator<Item = &'a Table>> {
+pub struct TableFilter<'a, Q: Query, I: Iterator<Item = &'a Table>> {
     iter: Filter<I, fn(&&Table) -> bool>,
-    _marker: PhantomData<F>,
+    _marker: PhantomData<Q>,
 }
 
-impl<'a, F: Fetch, I: Iterator<Item = &'a Table>> TableFilter<'a, F, I> {
+impl<'a, F: Query, I: Iterator<Item = &'a Table>> TableFilter<'a, F, I> {
     pub fn new(iter: I) -> Self {
         Self {
             iter: iter.filter(|table| {
@@ -227,7 +227,7 @@ impl<'a, F: Fetch, I: Iterator<Item = &'a Table>> TableFilter<'a, F, I> {
     }
 }
 
-impl<'a, F: Fetch, I: Iterator<Item = &'a Table>> Iterator for TableFilter<'a, F, I> {
+impl<'a, Q: Query, I: Iterator<Item = &'a Table>> Iterator for TableFilter<'a, Q, I> {
     type Item = &'a Table;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -235,14 +235,14 @@ impl<'a, F: Fetch, I: Iterator<Item = &'a Table>> Iterator for TableFilter<'a, F
     }
 }
 
-struct QueryLock<'a, F: Fetch> {
+struct QueryLock<'a, Q: Query> {
     stores: &'a Stores,
-    _marker: PhantomData<F>,
+    _marker: PhantomData<Q>,
 }
 
-impl<'a, F: Fetch> QueryLock<'a, F> {
+impl<'a, Q: Query> QueryLock<'a, Q> {
     pub fn new(stores: &'a Stores) -> Self {
-        F::for_each_type(|typ, is_mut, _| {
+        Q::for_each_type(|typ, is_mut, _| {
             if is_mut {
                 stores.acquire_write(typ.id);
             } else {
@@ -257,9 +257,9 @@ impl<'a, F: Fetch> QueryLock<'a, F> {
     }
 }
 
-impl<'a, F: Fetch> Drop for QueryLock<'a, F> {
+impl<'a, Q: Query> Drop for QueryLock<'a, Q> {
     fn drop(&mut self) {
-        F::for_each_type(|typ, is_mut, _| {
+        Q::for_each_type(|typ, is_mut, _| {
             if is_mut {
                 self.stores.release_write(typ.id);
             } else {

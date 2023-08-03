@@ -1,7 +1,7 @@
 use crate::{
     bundle::Bundle,
     entity::{Entities, EntityId},
-    query::{EntityQuery, Fetch, Query},
+    query::{EntityQuery, FullQuery, Query},
     store::Stores,
     tables::Tables,
 };
@@ -64,11 +64,11 @@ impl World {
         }
     }
 
-    pub fn query<F: Fetch>(&self) -> Query<F> {
-        Query::new(&self.stores, &self.tables)
+    pub fn query<Q: Query>(&self) -> FullQuery<Q> {
+        FullQuery::new(&self.stores, &self.tables)
     }
 
-    pub fn query_entity<F: Fetch>(&self, entity_id: EntityId) -> EntityQuery<F> {
+    pub fn query_entity<Q: Query>(&self, entity_id: EntityId) -> EntityQuery<Q> {
         EntityQuery::new(&self.stores, &self.tables, &self.entities, entity_id)
     }
 }
